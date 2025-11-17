@@ -1,4 +1,4 @@
-module ptti-app/ptti-helper
+module github.com/ptti-app/ptti-helper
 
 go 1.25.3
 
