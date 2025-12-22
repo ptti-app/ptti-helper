@@ -1,7 +1,7 @@
 # Custom helper function
 
 ```bash
-go get -u github.com/ptti-app/ptti-helper@v0.0.1
+go get -u github.com/ptti-app/ptti-helper@v0.0.2
 ```
 
 This is just a helper function for reusability between ptti go services.
