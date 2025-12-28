@@ -23,7 +23,8 @@ func baseQuery(q url.Values) map[string]any {
 	}
 	if q.Has("status") {
 		status := q.Get("status")
-		filters["status"] = status
+
+		filters["status"] = strings.ToUpper(status)
 	}
 	if q.Has("fields") {
 		arrStr := strings.Split(q.Get("fields"), ",")
@@ -82,6 +83,7 @@ func ParseQuery(q url.Values, customParam bson.M) map[string]any {
 			var newArr []any
 			var arrK string
 
+			// FIXME: this is very VERY niche condition.
 			for _, str := range arr {
 				id, err := bson.ObjectIDFromHex(str)
 				if err != nil {
