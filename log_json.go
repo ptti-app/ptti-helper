@@ -6,7 +6,7 @@ import (
 )
 
 // convert to JSON and log out
-func Log(T any, customMsg ...string) {
+func Customlog(T any, customMsg ...string) {
 	json, err := json.MarshalIndent(T, "", " ")
 	if err != nil {
 		log.Fatal(err)
