@@ -1,141 +1,210 @@
 package ptti
 
 import (
-	"log"
+	"fmt"
 	"maps"
 	"net/url"
 	"strconv"
 	"strings"
+	"time"
 
 	"go.mongodb.org/mongo-driver/v2/bson"
 	"go.mongodb.org/mongo-driver/v2/mongo/options"
 )
 
-func baseQuery(q url.Values) map[string]any {
-	filters := bson.M{}
-	baseMap := make(map[string]any)
-	if q.Has("id") {
-		objectID, err := bson.ObjectIDFromHex(q.Get("id"))
-		if err != nil {
-			log.Printf("error decode %s", err)
-		}
-		filters["_id"] = objectID
-	}
-	if q.Has("status") {
-		status := q.Get("status")
+type Type string
 
-		filters["status"] = strings.ToUpper(status)
-	}
-	if q.Has("fields") {
-		arrStr := strings.Split(q.Get("fields"), ",")
-		baseMap["fields"] = arrStr
-	}
-	if q.Has("page") {
-		page, err := strconv.Atoi(q.Get("page"))
-		if err != nil {
-			log.Printf("err: %s", err)
-		}
-		baseMap["page"] = page
-	}
-	if q.Has("offset") {
-		offset, err := strconv.Atoi(q.Get("offset"))
-		if err != nil {
-			log.Printf("err: %s", err)
-		}
-		baseMap["offset"] = offset
-	}
-	if q.Has("sort") && q.Has("order") {
-		sortBy := q.Get("sort")
-		var orderBy int
-		switch strings.ToLower(q.Get("order")) {
-		case "asc":
-			orderBy = 1
-		default:
-			orderBy = -1
-		}
-		sortMap := map[string]int{sortBy: orderBy}
+const (
+	String Type = "string"
+	Array  Type = "array"
+	ID     Type = "id"
+	Int    Type = "int"
+	Bool   Type = "bool"
+	Date   Type = "date"
+)
 
-		baseMap["sort"] = sortMap
-	}
-
-	baseMap["filters"] = filters
-
-	return baseMap
+type QueryOpts struct {
+	Filters    bson.M
+	Projection bson.M
+	Sort       bson.D
+	Page       int64
+	Limit      int64
+	Offset     int64
+	Skip       int64
 }
 
-// ParseQuery is a parser for querystring receive from URL.Query().
-//
-// CustomParam args accept bson.M{}, where customParam is anything that
-// is not included in the base querystring
-//
-// [Base QueryString: fields,sort,order,page,offset,id,status]
-func ParseQuery(q url.Values, customParam bson.M) map[string]any {
-	baseMap := baseQuery(q)
+func Parse(q url.Values, specs map[string]Type) (QueryOpts, error) {
+	out := QueryOpts{
+		Filters: bson.M{},
+	}
 
-	baseFilter := baseMap["filters"].(bson.M)
-	filter := baseFilter
-	for k, v := range customParam {
-		if v == "array" {
-			arr, ok := q[k]
-			if !ok {
+	// base filter
+	if v := strings.TrimSpace(q.Get("id")); v != "" {
+		oid, err := bson.ObjectIDFromHex(v)
+		if err != nil {
+			return QueryOpts{}, fmt.Errorf("invalid id: %w", err)
+		}
+		out.Filters["_id"] = oid
+	}
+	if v := strings.TrimSpace(q.Get("status")); v != "" {
+		out.Filters["status"] = v
+	}
+
+	// projection
+	if v := strings.TrimSpace(q.Get("fields")); v != "" {
+		proj := bson.M{}
+		for f := range strings.SplitSeq(v, ",") {
+			f = strings.TrimSpace(f)
+			if f == "" {
 				continue
 			}
-			var newArr []any
-			var arrK string
+			proj[f] = 1
+		}
+		if len(proj) > 0 {
+			out.Projection = proj
+		}
+	}
 
-			// FIXME: this is very VERY niche condition.
-			for _, str := range arr {
-				id, err := bson.ObjectIDFromHex(str)
-				if err != nil {
-					newArr = append(newArr, str)
-					arrK = k
+	// pagination
+	if v := strings.TrimSpace(q.Get("page")); v != "" {
+		n, err := strconv.ParseInt(v, 10, 64)
+		if err != nil || n < 1 {
+			return QueryOpts{}, fmt.Errorf("invalid page")
+		}
+		out.Page = n
+	}
+
+	if v := strings.TrimSpace(q.Get("limit")); v != "" {
+		n, err := strconv.ParseInt(v, 10, 64)
+		if err != nil || n < 1 {
+			return QueryOpts{}, fmt.Errorf("invalid limit")
+		}
+		out.Limit = n
+	}
+	if v := strings.TrimSpace(q.Get("offset")); v != "" {
+		n, err := strconv.ParseInt(v, 10, 64)
+		if err != nil || n < 1 {
+			return QueryOpts{}, fmt.Errorf("invalid offset")
+		}
+		out.Limit = n
+	}
+
+	// Compute Skip (if offset is given)
+	if out.Offset > 0 {
+		out.Skip = out.Offset
+	} else if out.Page > 0 {
+		if out.Limit < 1 {
+			return QueryOpts{}, fmt.Errorf("page requires limit")
+		}
+		out.Skip = (out.Page - 1) * out.Limit
+	}
+
+	// sort
+	sortBy := strings.TrimSpace(q.Get("sort"))
+	order := strings.ToLower(strings.TrimSpace(q.Get("order")))
+	if sortBy != "" {
+		dir := int32(-1)
+		if order == "asc" {
+			dir = 1
+		}
+		out.Sort = bson.D{{Key: sortBy, Value: dir}}
+	}
+
+	for k, t := range specs {
+		switch t {
+		case Array:
+			vals, ok := q[k]
+			if !ok || len(vals) == 0 {
+				continue
+			}
+			in := make([]any, 0, len(vals))
+			for _, s := range vals {
+				s = strings.TrimSpace(s)
+				if s == "" {
+					continue
+				}
+				if oid, err := bson.ObjectIDFromHex(s); err == nil {
+					in = append(in, oid)
 				} else {
-					newArr = append(newArr, id)
-					arrK = "_id"
+					in = append(in, s)
 				}
 			}
-			filter[arrK] = bson.M{"$in": newArr}
-		} else {
-			if ok := q.Has(k); ok {
-				filter[k] = q.Get(k)
+			if len(in) > 0 {
+				out.Filters[k] = bson.M{"$in": in}
 			}
+		case ID:
+			v := strings.TrimSpace(q.Get(k))
+			if v == "" {
+				continue
+			}
+			oid, err := bson.ObjectIDFromHex(v)
+			if err != nil {
+				return QueryOpts{}, fmt.Errorf("invalid %s ObjectID: %w", k, err)
+			}
+			out.Filters[k] = oid
+		case Int:
+			v := strings.TrimSpace(q.Get(k))
+			if v == "" {
+				continue
+			}
+			n, err := strconv.ParseInt(v, 10, 64)
+			if err != nil {
+				return QueryOpts{}, fmt.Errorf("invalid %s int: %w", k, err)
+			}
+			out.Filters[k] = n
+		case Bool:
+			v := strings.TrimSpace(q.Get(k))
+			if v == "" {
+				continue
+			}
+			b, err := strconv.ParseBool(v)
+			if err != nil {
+				return QueryOpts{}, fmt.Errorf("invalid %s bool: %w", k, err)
+			}
+			out.Filters[k] = b
+		case Date:
+			q_date := strings.TrimSpace(q.Get(k))
+			if q_date != "" {
+				dateFmt, err := time.Parse(time.DateOnly, q_date)
+				if err != nil {
+					continue
+				}
+				dateTimeStart := dateFmt.Format(time.RFC3339)
+				date, err := time.Parse(time.RFC3339, dateTimeStart)
+				if err != nil {
+					continue
+				}
+				out.Filters[k] = date
+			}
+		// string is default
+		default:
+			v := strings.TrimSpace(q.Get(k))
+			if v == "" {
+				continue
+			}
+			out.Filters[k] = v
 		}
 	}
-
-	baseMap["filters"] = filter
-
-	return baseMap
+	return out, nil
 }
 
-// MongoFindOpts for repository layer for mongo.Find() arguments.
-// Opts can be nil
-func MongoFindOpts(filterMap map[string]any, customFilter bson.M) (bson.M, **options.FindOptionsBuilder) {
-	var opts *options.FindOptionsBuilder
-
+func MongoFind(qo QueryOpts, extra bson.M) (bson.M, *options.FindOptionsBuilder) {
 	filters := bson.M{}
-	base := bson.M{}
-
-	if val, ok := filterMap["filters"].(bson.M); ok {
-		base = val
-	}
-
-	for _, m := range []bson.M{customFilter, base} {
+	for _, m := range []bson.M{qo.Filters, extra} {
 		maps.Copy(filters, m)
 	}
-
-	if fields, ok := filterMap["fields"].([]string); ok {
-		projection := bson.M{}
-		for _, v := range fields {
-			projection[v] = 1
-		}
-		opts = options.Find().SetProjection(projection)
+	opts := options.Find()
+	if len(qo.Projection) > 0 {
+		opts.SetProjection(qo.Projection)
 	}
-	if page, ok := filterMap["page"].(int64); ok {
-		opts = options.Find().SetLimit(page)
+	if len(qo.Sort) > 0 {
+		opts.SetSort(qo.Sort)
 	}
-	if sort, ok := filterMap["sort"].(map[string]int); ok {
-		opts = options.Find().SetSort(sort)
+	if qo.Limit > 0 {
+		opts.SetLimit(qo.Limit)
 	}
-
-	return filters, &opts
+	if qo.Skip > 0 {
+		opts.SetSkip(qo.Skip)
+	}
+	return filters, opts
 }
