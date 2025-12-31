@@ -39,7 +39,7 @@ func Parse(q url.Values, specs map[string]Type) (QueryOpts, error) {
 	}
 
 	// base filter
-	if v := strings.TrimSpace(q.Get("id")); v != "" {
+	if v := strings.TrimSpace(q.Get("_id")); v != "" {
 		oid, err := bson.ObjectIDFromHex(v)
 		if err != nil {
 			return QueryOpts{}, fmt.Errorf("invalid id: %w", err)
